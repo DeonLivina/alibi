@@ -1,13 +1,13 @@
 general:
     type: BBH
     seed: 42
-    num_per_class: 256      # examples generated per class (signal/glitch/background)
+    num_per_class: 64      # examples generated per class (signal/glitch/background)
     batch_size: 64
-    waveform_duration: 8    # duration of the analysis window [s]
-    sample_rate: 2048
-    right_pad: 0.5          # coalescence point [s] from right edge of window
+    waveform_duration: 1    # duration of the analysis window [s]
+    sample_rate: 4096
+    right_pad: 0.1          # coalescence point [s] from right edge of window
     f_min: 20
-    f_max: 1024
+    f_max: 2048
     f_ref: 20
     ifos: ['H1']            # single strain detector for now
     run: O3a                # GWOSC observing run for background (see load_data.py)
@@ -81,7 +81,7 @@ witness:
         color: white                # 'white' or 'powerlaw' (with `index`)
     coupling:
         type: lti                   # LTI Butterworth coupling
-        alpha: 0.8                  # fraction of strain-glitch power coherent w/ witness
+        alpha: 0.6                  # fraction of strain-glitch power coherent w/ witness
         filter:
             btype: bandpass
             cutoff: [20, 400]
