@@ -1,0 +1,9 @@
+ml4gw>=0.8.0
+gwpy
+h5py
+pyyaml
+tqdm
+numpy
+scipy
+torch
+requests
