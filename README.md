@@ -54,7 +54,8 @@ pip install -r requirements.txt
    cd dataset
    python load_data.py --config configs/config_H1.yaml --data ./data
    ```
-   This writes `./data/background_data/background-*.hdf5`.
+   This writes `./data/background_data/background-*.hdf5`. 
+   It can be omitted when working on the FASRC cluster since the O3a dataset is already downloaded and available following the path: `/n/holystore01/LABS/iaifi_lab/Lab/creissel/SparseBank/background_data/`.
 
 2. **Generate the dataset**:
 
