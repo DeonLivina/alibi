@@ -49,6 +49,25 @@ def _inject_center(kernel, response, kernel_size, pad):
     return injected
 
 
+def _reweight_to_snr(responses, target_snrs, psd, sample_rate, highpass):
+    """Reweight ``responses`` to ``target_snrs`` and return ``(responses, achieved)``.
+
+    ``ml4gw.gw.reweight_snrs`` can miss the requested network SNR by a few percent
+    for waveforms with power near the highpass (e.g. long CBC inspirals). One
+    corrective rescale -- SNR is linear in amplitude -- makes the achieved SNR
+    match the target exactly, so the stored label is trustworthy and signal vs
+    glitch examples are strictly comparable at equal SNR.
+    """
+    responses = reweight_snrs(
+        responses=responses, target_snrs=target_snrs, psd=psd,
+        sample_rate=sample_rate, highpass=highpass,
+    )
+    achieved = compute_network_snr(responses, psd, sample_rate, highpass=highpass)
+    responses = responses * (target_snrs / achieved).view(-1, 1, 1)
+    achieved = compute_network_snr(responses, psd, sample_rate, highpass=highpass)
+    return responses, achieved
+
+
 def injection(config, data_dir: str, device: str, mode: str):
     """Generate one batch of whitened 2-channel data for the given class.
 
@@ -113,17 +132,10 @@ def injection(config, data_dir: str, device: str, mode: str):
         waveforms, params = generate_signals(config, device)
         target_snrs = _sample_target_snr(config.snr_reweighting, batch_size, device)
         psd_i = _interp_psd(strain_psd, num_freqs)
-        waveforms = reweight_snrs(
-            responses=waveforms,
-            target_snrs=target_snrs,
-            psd=psd_i,
-            sample_rate=sample_rate,
-            highpass=f_min,
+        waveforms, params["snr"] = _reweight_to_snr(
+            waveforms, target_snrs, psd_i, sample_rate, f_min
         )
         strain_kernel = _inject_center(strain_kernel, waveforms, kernel_size, pad)
-        params["snr"] = compute_network_snr(
-            responses=waveforms, psd=psd_i, sample_rate=sample_rate, highpass=f_min
-        )
 
     elif mode == "glitch":
         src, params = generate_glitch_sources(config, device)
@@ -140,13 +152,11 @@ def injection(config, data_dir: str, device: str, mode: str):
         strain_snr = _sample_target_snr(config.glitch.snr.strain, batch_size, device)
         witness_snr = _sample_target_snr(config.glitch.snr.witness, batch_size, device)
 
-        strain_g = reweight_snrs(
-            responses=strain_g, target_snrs=strain_snr, psd=strain_psd_i,
-            sample_rate=sample_rate, highpass=f_min,
+        strain_g, strain_snr = _reweight_to_snr(
+            strain_g, strain_snr, strain_psd_i, sample_rate, f_min
         )
-        witness_g = reweight_snrs(
-            responses=witness_g, target_snrs=witness_snr, psd=witness_psd_i,
-            sample_rate=sample_rate, highpass=f_min,
+        witness_g, witness_snr = _reweight_to_snr(
+            witness_g, witness_snr, witness_psd_i, sample_rate, f_min
         )
 
         strain_kernel = _inject_center(strain_kernel, strain_g, kernel_size, pad)
