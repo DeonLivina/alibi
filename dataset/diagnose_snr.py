@@ -3,8 +3,9 @@
 Self-contained (no GWOSC): the strain background is replaced by synthetic
 Gaussian noise. The achieved-vs-target SNR question is independent of whether the
 background is real, so this faithfully exercises the glitch injection path
-(``generate_glitch_sources`` -> ``couple_glitch`` -> ``reweight_snrs`` ->
-``_inject_center`` -> ``whiten``) and compares it to the signal path.
+(``generate_glitch_sources`` -> ``bandlimit`` -> ``derive_witness`` ->
+``reweight_snrs`` -> ``_inject_center`` -> ``whiten``) and compares it to the
+signal path.
 
 For each class we report:
   (a) reweight check  -- network SNR of the reweighted response BEFORE injection
@@ -19,13 +20,24 @@ For each class we report:
 import torch
 
 from ml4gw.transforms import SpectralDensity, Whiten
+from ml4gw.gw import compute_network_snr, reweight_snrs
 
 from utils import load_config
 from waveforms import generate_signals, generate_glitch_sources
-from witness import couple_glitch
-from injections import _interp_psd, _inject_center, _reweight_to_snr
+from witness import derive_witness, bandlimit
+from injections import _interp_psd, _inject_center
 
 TARGET = 13.0
+
+
+def _reweight(responses, target_snrs, psd, sample_rate, highpass):
+    """Reweight to the target SNR and report the achieved network SNR."""
+    responses = reweight_snrs(
+        responses=responses, target_snrs=target_snrs, psd=psd,
+        sample_rate=sample_rate, highpass=highpass,
+    )
+    achieved = compute_network_snr(responses, psd, sample_rate, highpass=highpass)
+    return responses, achieved
 
 
 def _summary(name, x):
@@ -39,6 +51,7 @@ def main():
 
     sample_rate = config.general.sample_rate
     f_min = config.general.f_min
+    f_max = config.general.f_max
     kernel_length = config.general.waveform_duration
     batch_size = config.general.batch_size
 
@@ -82,17 +95,18 @@ def main():
 
     # --- signal path (control) ---------------------------------------------
     sig, _ = generate_signals(config, device)
-    sig, sig_a = _reweight_to_snr(sig, target, psd_i, sample_rate, f_min)
+    sig, sig_a = _reweight(sig, target, psd_i, sample_rate, f_min)
     sig_b = end_to_end_snr(sig)
     print(_summary("signal (a) reweight SNR", sig_a))
     print(_summary("signal (b) whitened RSS", sig_b))
 
     # --- glitch path -------------------------------------------------------
-    src, gparams = generate_glitch_sources(config, device)
-    src_indep, _ = generate_glitch_sources(config, device)
-    strain_g, _ = couple_glitch(src, src_indep, sample_rate, config.witness.coupling)
+    blip, gparams = generate_glitch_sources(config, device)
+    blip_indep, _ = generate_glitch_sources(config, device)
+    blip = bandlimit(blip, sample_rate, f_min, f_max)
+    strain_g, _ = derive_witness(blip, blip_indep, sample_rate, config.witness.coupling)
     strain_g = strain_g.unsqueeze(1)
-    strain_g, gl_a = _reweight_to_snr(strain_g, target, psd_i, sample_rate, f_min)
+    strain_g, gl_a = _reweight(strain_g, target, psd_i, sample_rate, f_min)
     gl_b = end_to_end_snr(strain_g)
     print(_summary("glitch (a) reweight SNR", gl_a))
     print(_summary("glitch (b) whitened RSS", gl_b))
