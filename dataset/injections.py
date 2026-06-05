@@ -20,7 +20,7 @@ from ml4gw.gw import compute_network_snr, reweight_snrs
 
 from utils import load_config
 from waveforms import generate_signals, generate_glitch_sources
-from witness import make_witness_noise, couple_glitch
+from witness import make_witness_noise, derive_witness
 
 LABELS = {"background": 0, "signal": 1, "glitch": 2}
 
@@ -138,10 +138,12 @@ def injection(config, data_dir: str, device: str, mode: str):
         strain_kernel = _inject_center(strain_kernel, waveforms, kernel_size, pad)
 
     elif mode == "glitch":
-        src, params = generate_glitch_sources(config, device)
-        src_indep, _ = generate_glitch_sources(config, device)
-        strain_g, witness_g = couple_glitch(
-            src, src_indep, sample_rate, config.witness.coupling
+        # The SineGaussian blip is injected into the strain channel; the witness
+        # glitch is derived from it (see witness.derive_witness).
+        blip, params = generate_glitch_sources(config, device)
+        blip_indep, _ = generate_glitch_sources(config, device)
+        strain_g, witness_g = derive_witness(
+            blip, blip_indep, sample_rate, config.witness.coupling
         )
         strain_g = strain_g.unsqueeze(1)
         witness_g = witness_g.unsqueeze(1)
