@@ -2,10 +2,12 @@
 
 For each class the strain channel uses real interferometer background; the witness
 channel is synthesised. Signals are injected into strain only; glitches are coupled
-into both strain and witness (see ``witness.py``); background is noise only.
+into both strain and witness (see ``witness.py``); background is noise only. A fourth
+``signal_glitch`` class injects a coincident signal and blip together (signal in strain
+only, blip in both channels), modelling a real signal contaminated by a glitch.
 
-Adapted from chreissel/GWDatasetGeneration, extended with a witness channel and a
-glitch class.
+Adapted from chreissel/GWDatasetGeneration, extended with a witness channel, a glitch
+class, and a combined signal+glitch class.
 """
 
 import importlib
@@ -20,9 +22,9 @@ from ml4gw.gw import compute_network_snr, reweight_snrs
 
 from utils import load_config
 from waveforms import generate_signals, generate_glitch_sources
-from witness import make_witness_noise, derive_witness
+from witness import make_witness_noise, derive_witness, bandlimit
 
-LABELS = {"background": 0, "signal": 1, "glitch": 2}
+LABELS = {"background": 0, "signal": 1, "glitch": 2, "signal_glitch": 3}
 
 
 def _sample_target_snr(snr_cfg, batch_size, device):
@@ -49,23 +51,63 @@ def _inject_center(kernel, response, kernel_size, pad):
     return injected
 
 
-def _reweight_to_snr(responses, target_snrs, psd, sample_rate, highpass):
-    """Reweight ``responses`` to ``target_snrs`` and return ``(responses, achieved)``.
-
-    ``ml4gw.gw.reweight_snrs`` can miss the requested network SNR by a few percent
-    for waveforms with power near the highpass (e.g. long CBC inspirals). One
-    corrective rescale -- SNR is linear in amplitude -- makes the achieved SNR
-    match the target exactly, so the stored label is trustworthy and signal vs
-    glitch examples are strictly comparable at equal SNR.
-    """
-    responses = reweight_snrs(
-        responses=responses, target_snrs=target_snrs, psd=psd,
-        sample_rate=sample_rate, highpass=highpass,
+def _inject_signal(config, device, strain_kernel, strain_psd_i,
+                   sample_rate, f_min, kernel_size, pad):
+    """Inject a CBC signal into the strain kernel; the witness is left untouched."""
+    batch_size = config.general.batch_size
+    waveforms, params = generate_signals(config, device)
+    target_snrs = _sample_target_snr(config.snr_reweighting, batch_size, device)
+    waveforms = reweight_snrs(
+        responses=waveforms, target_snrs=target_snrs, psd=strain_psd_i,
+        sample_rate=sample_rate, highpass=f_min,
     )
-    achieved = compute_network_snr(responses, psd, sample_rate, highpass=highpass)
-    responses = responses * (target_snrs / achieved).view(-1, 1, 1)
-    achieved = compute_network_snr(responses, psd, sample_rate, highpass=highpass)
-    return responses, achieved
+    # Store the achieved SNR; reweight_snrs can miss the target by a few percent.
+    params["snr"] = compute_network_snr(waveforms, strain_psd_i, sample_rate, highpass=f_min)
+    strain_kernel = _inject_center(strain_kernel, waveforms, kernel_size, pad)
+    return strain_kernel, params
+
+
+def _inject_glitch(config, device, strain_kernel, witness_kernel, strain_psd_i,
+                   witness_psd_i, sample_rate, f_min, f_max, kernel_size, pad):
+    """Inject a blip glitch into both the strain and the (derived) witness kernels.
+
+    The SineGaussian blip is injected into the strain channel; the witness glitch is
+    derived from it (see witness.derive_witness). The blip is confined to the detector
+    band [f_min, f_max] so it stays physical and carries no power in PSD bins where the
+    SNR reweighting would misbehave.
+    """
+    batch_size = config.general.batch_size
+    blip, params = generate_glitch_sources(config, device)
+    blip_indep, _ = generate_glitch_sources(config, device)
+    blip = bandlimit(blip, sample_rate, f_min, f_max)
+    strain_g, witness_g = derive_witness(
+        blip, blip_indep, sample_rate, config.witness.coupling
+    )
+    strain_g = strain_g.unsqueeze(1)
+    witness_g = witness_g.unsqueeze(1)
+
+    target_strain_snr = _sample_target_snr(config.glitch.snr.strain, batch_size, device)
+    target_witness_snr = _sample_target_snr(config.glitch.snr.witness, batch_size, device)
+
+    strain_g = reweight_snrs(
+        responses=strain_g, target_snrs=target_strain_snr, psd=strain_psd_i,
+        sample_rate=sample_rate, highpass=f_min,
+    )
+    witness_g = reweight_snrs(
+        responses=witness_g, target_snrs=target_witness_snr, psd=witness_psd_i,
+        sample_rate=sample_rate, highpass=f_min,
+    )
+
+    strain_kernel = _inject_center(strain_kernel, strain_g, kernel_size, pad)
+    witness_kernel = _inject_center(witness_kernel, witness_g, kernel_size, pad)
+    # Store the achieved SNRs (a few percent off the targets is acceptable).
+    params["strain_snr"] = compute_network_snr(
+        strain_g, strain_psd_i, sample_rate, highpass=f_min
+    )
+    params["witness_snr"] = compute_network_snr(
+        witness_g, witness_psd_i, sample_rate, highpass=f_min
+    )
+    return strain_kernel, witness_kernel, params
 
 
 def injection(config, data_dir: str, device: str, mode: str):
@@ -82,6 +124,7 @@ def injection(config, data_dir: str, device: str, mode: str):
     batch_size = config.general.batch_size
     sample_rate = config.general.sample_rate
     f_min = config.general.f_min
+    f_max = config.general.f_max
     kernel_length = config.general.waveform_duration
 
     fduration = config.whiten.fduration
@@ -125,46 +168,37 @@ def injection(config, data_dir: str, device: str, mode: str):
     strain_kernel = strain_bg[..., psd_size:]
     witness_kernel = witness_bg[..., psd_size:]
 
+    strain_psd_i = _interp_psd(strain_psd, num_freqs)
+    witness_psd_i = _interp_psd(witness_psd, num_freqs)
+
     params = {}
 
     # ---- class-specific injection -----------------------------------------
     if mode == "signal":
-        waveforms, params = generate_signals(config, device)
-        target_snrs = _sample_target_snr(config.snr_reweighting, batch_size, device)
-        psd_i = _interp_psd(strain_psd, num_freqs)
-        waveforms, params["snr"] = _reweight_to_snr(
-            waveforms, target_snrs, psd_i, sample_rate, f_min
+        strain_kernel, params = _inject_signal(
+            config, device, strain_kernel, strain_psd_i,
+            sample_rate, f_min, kernel_size, pad,
         )
-        strain_kernel = _inject_center(strain_kernel, waveforms, kernel_size, pad)
 
     elif mode == "glitch":
-        # The SineGaussian blip is injected into the strain channel; the witness
-        # glitch is derived from it (see witness.derive_witness).
-        blip, params = generate_glitch_sources(config, device)
-        blip_indep, _ = generate_glitch_sources(config, device)
-        strain_g, witness_g = derive_witness(
-            blip, blip_indep, sample_rate, config.witness.coupling
-        )
-        strain_g = strain_g.unsqueeze(1)
-        witness_g = witness_g.unsqueeze(1)
-
-        strain_psd_i = _interp_psd(strain_psd, num_freqs)
-        witness_psd_i = _interp_psd(witness_psd, num_freqs)
-
-        strain_snr = _sample_target_snr(config.glitch.snr.strain, batch_size, device)
-        witness_snr = _sample_target_snr(config.glitch.snr.witness, batch_size, device)
-
-        strain_g, strain_snr = _reweight_to_snr(
-            strain_g, strain_snr, strain_psd_i, sample_rate, f_min
-        )
-        witness_g, witness_snr = _reweight_to_snr(
-            witness_g, witness_snr, witness_psd_i, sample_rate, f_min
+        strain_kernel, witness_kernel, params = _inject_glitch(
+            config, device, strain_kernel, witness_kernel, strain_psd_i,
+            witness_psd_i, sample_rate, f_min, f_max, kernel_size, pad,
         )
 
-        strain_kernel = _inject_center(strain_kernel, strain_g, kernel_size, pad)
-        witness_kernel = _inject_center(witness_kernel, witness_g, kernel_size, pad)
-        params["strain_snr"] = strain_snr
-        params["witness_snr"] = witness_snr
+    elif mode == "signal_glitch":
+        # Coincident signal + blip: the signal lives in the strain only, while the
+        # blip appears in both strain and witness. The witness therefore flags the
+        # glitch contamination without responding to the astrophysical signal.
+        strain_kernel, sig_params = _inject_signal(
+            config, device, strain_kernel, strain_psd_i,
+            sample_rate, f_min, kernel_size, pad,
+        )
+        strain_kernel, witness_kernel, glitch_params = _inject_glitch(
+            config, device, strain_kernel, witness_kernel, strain_psd_i,
+            witness_psd_i, sample_rate, f_min, f_max, kernel_size, pad,
+        )
+        params = {**sig_params, **glitch_params}
 
     # mode == "background": inject nothing.
 
@@ -181,6 +215,6 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     config = load_config(config_path="configs/config_H1.yaml")
     background_dir = Path("./data") / "background_data"
-    for m in ("background", "signal", "glitch"):
+    for m in ("background", "signal", "glitch", "signal_glitch"):
         d, p = injection(config, data_dir=background_dir, device=device, mode=m)
         print(m, d.shape)

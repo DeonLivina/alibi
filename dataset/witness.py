@@ -75,6 +75,30 @@ def _butter_filter(x: torch.Tensor, sample_rate, filt_cfg) -> torch.Tensor:
     return torch.from_numpy(filtered).to(x.device, x.dtype)
 
 
+def bandlimit(x: torch.Tensor, sample_rate, f_min, f_max) -> torch.Tensor:
+    """Confine a transient to the detector's sensitive band ``[f_min, f_max]``.
+
+    A low-Q blip is broadband, but a real blip only has measurable power within the
+    detector band. Confining it here keeps the strain glitch physical *and* avoids
+    putting power in frequency bins where the estimated PSD is ~0 / unreliable (e.g.
+    near DC or Nyquist), which would otherwise make the SNR reweighting blow up.
+    """
+    nyq = sample_rate / 2.0
+    lo = max(float(f_min), 0.0) / nyq
+    hi = min(float(f_max), 0.999 * nyq) / nyq
+    if lo > 0.0 and hi < 1.0:
+        sos = butter(8, [lo, hi], btype="bandpass", output="sos")
+    elif lo > 0.0:
+        sos = butter(8, lo, btype="highpass", output="sos")
+    elif hi < 1.0:
+        sos = butter(8, hi, btype="lowpass", output="sos")
+    else:
+        return x
+    arr = x.detach().cpu().numpy().astype(np.float64)
+    filtered = sosfiltfilt(sos, arr, axis=-1).copy()
+    return torch.from_numpy(filtered).to(x.device, x.dtype)
+
+
 def derive_witness(strain_blip, witness_indep, sample_rate, coupling_cfg):
     """Derive the witness glitch from the blip injected into the strain channel.
 
