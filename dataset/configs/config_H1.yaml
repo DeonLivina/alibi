@@ -49,15 +49,19 @@ snr_reweighting:
     func: ml4gw.distributions.PowerLaw
     args: [12, 100, -3]
 
-# --- glitch (SineGaussian) --------------------------------------------------
+# --- glitch (SineGaussian blip) ---------------------------------------------
+# A blip glitch is a short, broadband transient (teardrop in time-frequency). It is
+# well modelled by a *low-Q* sine-Gaussian: low quality factor -> few cycles ->
+# short and broadband (fractional bandwidth ~ 1/Q). Higher Q would give a long,
+# narrowband tone (whistle-like), which is NOT a blip.
 glitch:
     prior:
-        quality:
+        quality:                    # low Q -> short, broadband blip
             func: torch.distributions.Uniform
-            args: [3.0, 30.0]
-        frequency:
+            args: [2.0, 6.0]
+        frequency:                  # central frequency [Hz]
             func: torch.distributions.Uniform
-            args: [30.0, 400.0]
+            args: [40.0, 400.0]
         hrss:                       # amplitude placeholder; overwritten by SNR reweighting
             func: ml4gw.distributions.DeltaFunction
             args: [1.0]
@@ -76,13 +80,18 @@ glitch:
             args: [15.0, 50.0]
 
 # --- witness channel --------------------------------------------------------
+# The blip is injected into the strain channel; the witness glitch is *derived* from
+# it (witness.derive_witness): the strain blip is passed through the witness sensor's
+# band-limited transfer function, optionally delayed, and mixed with independent
+# sensor noise. `alpha` sets how much of the witness is coherent with the strain.
 witness:
     noise:
         color: white                # 'white' or 'powerlaw' (with `index`)
     coupling:
         type: lti                   # LTI Butterworth coupling
-        alpha: 1.0                  # fraction of strain-glitch power coherent w/ witness
-        filter:
+        alpha: 0.9                  # fraction of witness-glitch power coherent w/ strain
+        lag: 0.0                    # propagation delay strain->witness [s] (e.g. 0.001)
+        filter:                     # witness sensor band (sub-band of the blip)
             btype: bandpass
-            cutoff: [20, 400]
+            cutoff: [20, 300]
             order: 4

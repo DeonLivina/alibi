@@ -5,9 +5,10 @@ Two kinds of transients are produced here, both with ml4gw:
 * ``generate_signals`` -- astrophysical CBC (BBH) signals, projected onto the
   detector(s). Adapted from chreissel/GWDatasetGeneration.
 * ``generate_glitch_sources`` -- ad-hoc SineGaussian transients used to model
-  instrumental glitches. These return a single-channel "glitch source" time
-  series g(t); the coupling of that source into the strain and witness channels
-  is handled in ``witness.py``.
+  instrumental *blip* glitches: short, broadband (low quality factor) bursts that
+  resemble the teardrop-shaped blips seen in real interferometer data. The returned
+  single-channel time series g(t) is injected into the strain channel; the witness
+  channel is derived from it in ``witness.py``.
 """
 
 import importlib
@@ -116,11 +117,14 @@ def generate_signals(config, device: str):
 
 
 def generate_glitch_sources(config, device: str):
-    """Generate single-channel SineGaussian glitch sources g(t).
+    """Generate single-channel SineGaussian blip glitches g(t).
 
     Returns a tensor of shape (batch, time) and the sampled glitch parameters.
-    The waveform is intentionally returned un-normalised (hrss is sampled but the
-    final amplitude is set by SNR reweighting in the injection step).
+    With the blip-like prior (low quality factor, ~tens-to-hundreds-of-Hz central
+    frequency) the SineGaussian is a short, broadband burst -- the standard
+    sine-Gaussian model for blip glitches. The waveform is intentionally returned
+    un-normalised (hrss is sampled but the final amplitude is set by SNR reweighting
+    in the injection step).
     """
 
     waveform_duration = config.general.waveform_duration

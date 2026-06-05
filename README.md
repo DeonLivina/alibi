@@ -18,7 +18,7 @@ physical basis of glitch vetoing, and it is what this dataset encodes across thr
 | Class          | Strain channel (H1)                    | Witness channel                         |
 |----------------|----------------------------------------|-----------------------------------------|
 | **Signal**     | real noise + injected gravitational wave (GW) signal        | noise only (a GW does not couple here)  |
-| **Glitch**     | real noise + injected glitch transient | noise + coupled copy of the glitch  |
+| **Glitch**     | real noise + injected blip glitch      | noise + witness copy derived from the blip |
 | **Background** | real noise only                        | noise only                              |
 
 The signal and glitch transients are placed at the same time location, so the witness, not the arrival time, is the discriminator.
@@ -27,11 +27,14 @@ The signal and glitch transients are placed at the same time location, so the wi
 
 * **Signals**: ml4gw CBC waveforms (`IMRPhenomD`), projected onto the detector and rescaled
   to a target network SNR (`ml4gw.gw.reweight_snrs`). We start by considering shorter signals from binary black hole merging.
-* **Glitches**: ml4gw ad-hoc `SineGaussian` transients. The glitch source is what the
-  witness sees; it couples into the strain through an *LTI Butterworth filter*. Only a
-  fraction `alpha` of the strain-glitch power is coherent with the witness (the rest is an
-  independent strain-only component) — so `alpha` directly sets how informative the witness
-  is.
+* **Glitches**: short, broadband **blip** glitches modelled as low-Q ml4gw ad-hoc
+  `SineGaussian` transients (the standard sine-Gaussian model for the teardrop-shaped
+  blips seen in real detector data). The blip is injected into the *strain* channel, and
+  the witness channel is *derived* from it: the strain blip is passed through the witness
+  sensor's band-limited transfer function (an *LTI Butterworth filter*, optionally with a
+  small propagation lag) and mixed with independent sensor noise. Only a fraction `alpha`
+  of the witness-glitch power is coherent with the strain blip — so `alpha` directly sets
+  how informative the witness is.
 * **Background**: real H1 strain from GWOSC O3a; the witness background is synthesised
   Gaussian noise.
 * **Whitening**: per-channel PSD estimation + `ml4gw.transforms.Whiten`.

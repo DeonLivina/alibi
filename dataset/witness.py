@@ -3,16 +3,18 @@
 GWOSC open data only contains the strain channel, so the witness channel is
 synthesised here. The physical story this models:
 
-* A glitch originates from some terrestrial / instrumental disturbance. A witness
-  (auxiliary) sensor records the disturbance more or less directly -- it "sees the
-  cause".
-* The disturbance couples into the strain channel through an imperfect, frequency
-  dependent path. We model that path as a linear time-invariant (LTI) Butterworth
-  filter ``C``.
-* The coupling is partial: only a fraction ``alpha`` of the strain-glitch power is
-  coherent with the witness; the remaining ``1 - alpha`` is an independent
-  strain-only glitch component. ``alpha`` therefore sets the strain<->witness
-  coherence and is the single "how useful is the witness" knob.
+* A blip glitch is injected directly into the *strain* channel as a short,
+  broadband SineGaussian transient (see ``waveforms.generate_glitch_sources``),
+  mimicking the teardrop-shaped blips seen in real interferometer data.
+* The *same* terrestrial disturbance is observed by a witness (auxiliary) sensor.
+  We therefore *derive* the witness glitch from the injected strain glitch: it is
+  the strain blip passed through the witness's own coupling path, modelled as a
+  linear time-invariant (LTI) Butterworth filter ``C`` (a limited sensor band),
+  optionally with a small propagation ``lag``.
+* The coupling is partial: only a fraction ``alpha`` of the witness-glitch power is
+  coherent with the strain blip; the remaining ``1 - alpha`` is independent sensor
+  noise. ``alpha`` therefore sets the strain<->witness coherence and is the single
+  "how useful is the witness" knob.
 
 Crucially, *astrophysical* signals do not couple to a witness, so for the signal
 and background classes the witness carries noise only. Only the glitch class
@@ -73,18 +75,27 @@ def _butter_filter(x: torch.Tensor, sample_rate, filt_cfg) -> torch.Tensor:
     return torch.from_numpy(filtered).to(x.device, x.dtype)
 
 
-def couple_glitch(glitch_source, glitch_source_indep, sample_rate, coupling_cfg):
-    """Build raw strain and witness glitch traces from glitch sources.
+def derive_witness(strain_blip, witness_indep, sample_rate, coupling_cfg):
+    """Derive the witness glitch from the blip injected into the strain channel.
+
+    The blip ``strain_blip`` is what the strain channel actually records. The
+    witness sensor observes the same disturbance through its own coupling path: a
+    band-limited transfer function (Butterworth filter ``C``), an optional small
+    propagation ``lag``, plus independent sensor noise. The coherent fraction is
+    set by ``alpha``.
 
     Parameters
     ----------
-    glitch_source : (batch, time) tensor
-        The glitch as seen (cleanly) by the witness.
-    glitch_source_indep : (batch, time) tensor
-        An independent glitch realisation used for the strain-only component.
+    strain_blip : (batch, time) tensor
+        The SineGaussian blip as injected into the strain channel.
+    witness_indep : (batch, time) tensor
+        An independent glitch realisation supplying the incoherent sensor
+        component (so the witness still looks glitch-shaped where it is not
+        coherent with the strain).
     coupling_cfg : namespace
-        ``type`` (only ``lti`` supported), ``filter`` (btype/cutoff/order) and
-        ``alpha`` (coupling fraction in [0, 1]).
+        ``type`` (only ``lti`` supported), ``filter`` (btype/cutoff/order),
+        ``alpha`` (coherent fraction in [0, 1]) and optional ``lag`` (coupling
+        delay in seconds).
 
     Returns
     -------
@@ -98,12 +109,18 @@ def couple_glitch(glitch_source, glitch_source_indep, sample_rate, coupling_cfg)
     alpha = float(getattr(coupling_cfg, "alpha", 0.8))
     alpha = min(max(alpha, 0.0), 1.0)
 
-    coupled = _rms_normalize(_butter_filter(glitch_source, sample_rate, coupling_cfg.filter))
-    indep = _rms_normalize(_butter_filter(glitch_source_indep, sample_rate, coupling_cfg.filter))
+    # The strain keeps the clean blip; the witness is a band-limited copy of it.
+    strain_glitch = _rms_normalize(strain_blip)
+    coupled = _rms_normalize(_butter_filter(strain_glitch, sample_rate, coupling_cfg.filter))
 
-    # Power-weighted mix so that the fraction of strain-glitch power that is
-    # coherent with the witness is ~alpha.
-    strain_glitch = (alpha**0.5) * coupled + ((1.0 - alpha) ** 0.5) * indep
+    # Optional propagation delay between the strain and the witness sensor.
+    lag = float(getattr(coupling_cfg, "lag", 0.0))
+    if lag:
+        coupled = torch.roll(coupled, shifts=int(round(lag * sample_rate)), dims=-1)
 
-    witness_glitch = _rms_normalize(glitch_source)
-    return _rms_normalize(strain_glitch), witness_glitch
+    indep = _rms_normalize(_butter_filter(witness_indep, sample_rate, coupling_cfg.filter))
+
+    # Power-weighted mix so that the fraction of witness-glitch power coherent with
+    # the strain blip is ~alpha.
+    witness_glitch = (alpha**0.5) * coupled + ((1.0 - alpha) ** 0.5) * indep
+    return strain_glitch, _rms_normalize(witness_glitch)
