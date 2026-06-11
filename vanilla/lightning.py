@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from dataloader import get_dataloaders
-from witness_loader import get_all_dataloaders
+from dataloader import get_all_dataloaders
 from mambapy.mamba import Mamba, MambaConfig
 import lightning as L
 
