@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from model import GWMamba
-from witness_loader import get_all_dataloaders
-from dataloader import get_dataloaders
+from dataloader import get_all_dataloaders
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
