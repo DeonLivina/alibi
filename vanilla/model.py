@@ -8,8 +8,8 @@ class GWMamba(nn.Module):
         super().__init__()
 
         self.config = MambaConfig(
-            d_model       = 32,   # restored to reasonable size
-            d_state       = 8,   # kept small for memory
+            d_model       = 32,   
+            d_state       = 8,
             n_layers      = 4,
             expand_factor = 2,
             pscan         = True
